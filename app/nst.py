@@ -52,9 +52,9 @@ class NSTInference:
     @staticmethod
     def _gram_matrix(x):
         b, c, h, w = x.size()
-        features = x.view(c, h * w)
-        gram = features @ features.t()
-        return gram / (c * h * w)
+        features = x.view(b, c, h * w)
+        gram = torch.bmm(features, features.transpose(1, 2))
+        return gram / (c * h * w * b)
 
     def _optimal_size(self, size):
         w, h = size
@@ -100,7 +100,7 @@ class NSTInference:
             elif isinstance(layer, nn.MaxPool2d):
                 name = f"pool_{i}"
             else:
-                name = f"layer_{i}"
+                continue
 
             layers.append(layer)
 
@@ -112,6 +112,44 @@ class NSTInference:
         model = nn.Sequential(normalization, *layers)
         return model, content_layers, style_layers
 
+    def _make_closure(
+        self,
+        target,
+        model,
+        content_features,
+        style_features,
+        content_ids,
+        style_ids,
+    ):
+        optimizer = optim.LBFGS([target], max_iter=1)
+
+        def closure():
+            optimizer.zero_grad()
+            content_loss = 0.0
+            style_loss = 0.0
+
+            for name, idx in content_ids.items():
+                target_feat = model[: idx + 1](target)
+                content_loss += nn.functional.mse_loss(
+                    target_feat, content_features[name]
+                )
+
+            for name, idx in style_ids.items():
+                target_feat = model[: idx + 1](target)
+                gram_t = self._gram_matrix(target_feat)
+                style_loss += nn.functional.mse_loss(gram_t, style_features[name])
+
+            style_loss = style_loss / len(style_ids)
+
+            total_loss = (
+                self.content_weight * content_loss + self.style_weight * style_loss
+            )
+            total_loss.backward()
+
+            return total_loss
+
+        return closure, optimizer
+
     def estimate_time(self, content_image, style_image):
         content, _ = self._load_image(content_image)
         style, _ = self._load_image(style_image)
@@ -120,7 +158,6 @@ class NSTInference:
         model.to(self.device).eval()
 
         target = content.clone().requires_grad_(True)
-        optimizer = optim.LBFGS([target])
 
         content_features = {
             name: model[: idx + 1](content).detach()
@@ -131,42 +168,42 @@ class NSTInference:
             for name, idx in style_ids.items()
         }
 
-        step = [0]
+        test_optimizer = optim.LBFGS([target], max_iter=1)
 
-        start = time.time()
-
-        def closure():
-            optimizer.zero_grad()
+        def test_closure():
+            test_optimizer.zero_grad()
             content_loss = 0.0
             style_loss = 0.0
 
             for name, idx in content_ids.items():
                 target_feat = model[: idx + 1](target)
-                content_loss += torch.mean((target_feat - content_features[name]) ** 2)
+                content_loss += nn.functional.mse_loss(
+                    target_feat, content_features[name]
+                )
 
             for name, idx in style_ids.items():
                 target_feat = model[: idx + 1](target)
                 gram_t = self._gram_matrix(target_feat)
-                style_loss += torch.mean((gram_t - style_features[name]) ** 2)
+                style_loss += nn.functional.mse_loss(gram_t, style_features[name])
 
-            loss = self.content_weight * content_loss + self.style_weight * style_loss
-            loss.backward()
-            step[0] += 1
-            return loss
+            style_loss = style_loss / len(style_ids)
+            total_loss = (
+                self.content_weight * content_loss + self.style_weight * style_loss
+            )
+            total_loss.backward()
+            return total_loss
 
-        optimizer.step(closure)
+        start_time = time.time()
+        test_optimizer.step(test_closure)
+        end_time = time.time()
 
-        end = time.time()
-        time_per_step = end - start
+        time_per_step = end_time - start_time
         estimated_total = time_per_step * self.num_steps
+
         return estimated_total
 
     def transfer_style(
-        self,
-        content_image,
-        style_image,
-        output_path=None,
-        progress_callback=None,
+        self, content_image, style_image, output_path=None, progress_callback=None
     ):
         content, original_size = self._load_image(content_image)
         style, _ = self._load_image(style_image)
@@ -184,61 +221,35 @@ class NSTInference:
         }
 
         target = content.clone().requires_grad_(True)
-        optimizer = optim.LBFGS([target])
-
-        step = [0]
         start_time = time.time()
-        last_time = start_time
 
-        while step[0] <= self.num_steps:
+        closure, optimizer = self._make_closure(
+            target, model, content_features, style_features, content_ids, style_ids
+        )
 
-            def closure():
-                optimizer.zero_grad()
-
-                content_loss = 0.0
-                style_loss = 0.0
-
-                for name, idx in content_ids.items():
-                    target_feat = model[: idx + 1](target)
-                    content_loss += torch.mean(
-                        (target_feat - content_features[name]) ** 2
-                    )
-
-                for name, idx in style_ids.items():
-                    target_feat = model[: idx + 1](target)
-                    gram_t = self._gram_matrix(target_feat)
-                    style_loss += torch.mean((gram_t - style_features[name]) ** 2)
-
-                loss = (
-                    self.content_weight * content_loss + self.style_weight * style_loss
-                )
-                loss.backward()
-                step[0] += 1
-
-                if progress_callback is not None:
-                    current_time = time.time()
-                    elapsed = current_time - start_time
-                    avg_per_step = elapsed / step[0]
-                    remaining = avg_per_step * (self.num_steps - step[0])
-                    progress_callback(step[0], remaining)
-
-                return loss
-
+        for step in range(1, self.num_steps + 1):
             optimizer.step(closure)
 
-        result = target.detach().squeeze(0).clamp(0, 1).cpu()
-        result = transforms.ToPILImage()(result)
+            if progress_callback:
+                elapsed = time.time() - start_time
+                avg_per_step = elapsed / step
+                remaining = max(round(avg_per_step * (self.num_steps - step)), 0)
+                progress_callback(step, remaining)
 
-        if result.size != original_size:
-            result = result.resize(original_size, Image.Resampling.LANCZOS)
+        with torch.no_grad():
+            result = target.detach().squeeze(0).clamp(0, 1).cpu()
+
+        result_pil = transforms.ToPILImage()(result)
+        if result_pil.size != original_size:
+            result_pil = result_pil.resize(original_size, Image.Resampling.LANCZOS)
 
         if output_path:
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            result.save(output_path)
+            result_pil.save(output_path)
 
         total_time = time.time() - start_time
-        return result, total_time
+        return result_pil, total_time
 
 
 def test_nst_inference():

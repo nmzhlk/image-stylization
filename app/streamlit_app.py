@@ -49,6 +49,50 @@ def render_nst_ui():
     content_file = None
     style_file = None
 
+    NST_PRESETS = {
+        "Fast Preview": {
+            "max_size": 384,
+            "num_steps": 100,
+            "content_weight": 1.0,
+            "style_weight": 5e4,
+        },
+        "Balanced": {
+            "max_size": 512,
+            "num_steps": 300,
+            "content_weight": 1.0,
+            "style_weight": 1e5,
+        },
+        "Artistic": {
+            "max_size": 512,
+            "num_steps": 500,
+            "content_weight": 1.0,
+            "style_weight": 3e5,
+        },
+        "High Quality": {
+            "max_size": 768,
+            "num_steps": 700,
+            "content_weight": 1.0,
+            "style_weight": 5e5,
+        },
+        "Custom": None,
+    }
+
+    preset = st.selectbox("NST Preset", list(NST_PRESETS.keys()))
+
+    if preset != "Custom":
+        preset_values = NST_PRESETS[preset]
+        max_size = preset_values["max_size"]
+        num_steps = preset_values["num_steps"]
+        content_weight = preset_values["content_weight"]
+        style_weight = preset_values["style_weight"]
+        custom = False
+    else:
+        max_size = 512
+        num_steps = 300
+        content_weight = 1.0
+        style_weight = 1e5
+        custom = True
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -80,12 +124,38 @@ def render_nst_ui():
     st.subheader("NST Parameters")
 
     p1, p2 = st.columns(2)
+
     with p1:
-        max_size = st.slider("Max image size", 256, 1024, 512, step=64)
-        content_weight = st.number_input("Content weight", value=1.0, format="%.2f")
+        max_size = st.slider(
+            "Max image size",
+            256,
+            1024,
+            max_size,
+            step=64,
+            disabled=not custom,
+        )
+        content_weight = st.number_input(
+            "Content weight",
+            value=content_weight,
+            format="%.2f",
+            disabled=not custom,
+        )
+
     with p2:
-        num_steps = st.slider("Optimization steps", 50, 500, 300, step=50)
-        style_weight = st.number_input("Style weight", value=1e5, format="%.1e")
+        num_steps = st.slider(
+            "Optimization steps",
+            50,
+            800,
+            num_steps,
+            step=50,
+            disabled=not custom,
+        )
+        style_weight = st.number_input(
+            "Style weight",
+            value=style_weight,
+            format="%.1e",
+            disabled=not custom,
+        )
 
     return (
         content_file,

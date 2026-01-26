@@ -1,3 +1,4 @@
+import io
 import os
 import tempfile
 from pathlib import Path
@@ -8,13 +9,21 @@ import streamlit as st
 
 from style_transfer import StyleTransfer
 
+if "result_image" not in st.session_state:
+    st.session_state.result_image = None
 
-def save_uploaded_file(uploaded_file) -> Path:
-    suffix = Path(uploaded_file.name).suffix
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    image = Image.open(uploaded_file).convert("RGB")
-    image.save(tmp.name)
-    return Path(tmp.name)
+if "content_image" not in st.session_state:
+    st.session_state.content_image = None
+
+if "scroll_to_result" not in st.session_state:
+    st.session_state.scroll_to_result = False
+
+if "cyclegan_style_label" not in st.session_state:
+    st.session_state.cyclegan_style_label = None
+
+
+def load_uploaded_image(uploaded_file):
+    return Image.open(uploaded_file).convert("RGB")
 
 
 def make_progress_callback(num_steps, progress_bar, progress_text):
@@ -46,9 +55,6 @@ style_display_map = {
 
 
 def render_nst_ui():
-    content_file = None
-    style_file = None
-
     NST_PRESETS = {
         "Fast Preview": {
             "max_size": 384,
@@ -105,7 +111,7 @@ def render_nst_ui():
             st.image(
                 Image.open(content_file).convert("RGB"),
                 caption="Content Image",
-                width=300,
+                width="stretch",
             )
 
     with col2:
@@ -118,7 +124,7 @@ def render_nst_ui():
             st.image(
                 Image.open(style_file).convert("RGB"),
                 caption="Style Image",
-                width=300,
+                width="stretch",
             )
 
     st.subheader("NST Parameters")
@@ -170,32 +176,36 @@ def render_nst_ui():
 
 
 def render_cyclegan_ui():
-    content_file = None
-    selected_style_key = None
-    selected_label = None
+    col_left, col_right = st.columns(2)
 
-    content_file = st.file_uploader(
-        "Content Image",
-        type=["jpg", "jpeg", "png"],
-        key="cyclegan_content",
-    )
-    if content_file:
-        st.image(
-            Image.open(content_file).convert("RGB"),
-            caption="Content Image",
-            width=300,
+    with col_left:
+        content_file = st.file_uploader(
+            "Content Image", ["jpg", "jpeg", "png"], key="cyclegan_content"
         )
 
-        st.subheader("Art Style")
-
-        if not style_display_map:
-            st.warning("No CycleGAN models found")
+        if content_file:
+            st.image(
+                load_uploaded_image(content_file),
+                caption="Content Image",
+                width="stretch",
+            )
         else:
+            selected_label = None
+            selected_style_key = None
+
+    with col_right:
+        if style_display_map:
             selected_label = st.selectbox(
                 "Choose style",
                 list(style_display_map.keys()),
+                key="cyclegan_style_select",
             )
             selected_style_key = style_display_map[selected_label]
+            st.session_state.cyclegan_style_label = selected_label
+        else:
+            st.warning("No CycleGAN models found")
+            selected_label = None
+            selected_style_key = None
 
     return content_file, selected_style_key, selected_label
 
@@ -206,18 +216,28 @@ st.title("Image Stylization")
 st.write("Neural Style Transfer (NST) and CycleGAN")
 
 method_ui = st.selectbox("Select styling method", ["NST", "CycleGAN"])
-method = method_ui.lower()
 
-content_file = None
-style_file = None
-params = {}
-selected_style_key = None
-selected_label = None
+if st.session_state.get("prev_method") != method_ui:
+    st.session_state.result_image = None
+    st.session_state.content_image = None
+    st.session_state.scroll_to_result = False
+
+st.session_state.prev_method = method_ui
+
+method = method_ui.lower()
 
 if method == "nst":
     content_file, style_file, params = render_nst_ui()
 else:
     content_file, selected_style_key, selected_label = render_cyclegan_ui()
+
+if method == "nst" and content_file and style_file:
+    tmp_engine = StyleTransfer(method="nst", **params)
+    est = tmp_engine.model.estimate_time(
+        load_uploaded_image(content_file),
+        load_uploaded_image(style_file),
+    )
+    st.info(f"Estimated time: ~{int(est)} sec")
 
 run = st.button("Stylize!")
 
@@ -226,61 +246,90 @@ if run:
         st.error("Content image is required")
         st.stop()
 
-    content_path = save_uploaded_file(content_file)
-    style_path = None
+    content_path = load_uploaded_image(content_file)
 
-    try:
-        if method == "nst":
-            if style_file is None:
-                st.error("Style image is required for NST")
-                st.stop()
+    if method == "nst":
+        if style_file is None:
+            st.error("Style image is required for NST")
+            st.stop()
 
-            style_path = save_uploaded_file(style_file)
+        style_img = load_uploaded_image(style_file)
 
-            engine = StyleTransfer(
-                method="nst",
-                **params,
+        engine = StyleTransfer(method="nst", **params)
+
+        with st.spinner("Processing..."):
+            progress_bar = st.progress(0)
+            progress_text = st.empty()
+
+            result, total_time = engine.run(
+                content_image=content_path,
+                style_image=style_img,
+                progress_callback=make_progress_callback(
+                    params["num_steps"], progress_bar, progress_text
+                ),
             )
 
-            with st.spinner("Processing..."):
-                progress_bar = st.progress(0)
-                progress_text = st.empty()
+        st.session_state.nst_params = params
+        st.session_state.result_image = result
+        st.session_state.content_image = content_path
+        st.session_state.scroll_to_result = True
 
-                result, total_time = engine.run(
-                    content_image=content_path,
-                    style_image=style_path,
-                    progress_callback=make_progress_callback(
-                        params["num_steps"],
-                        progress_bar,
-                        progress_text,
-                    ),
-                )
+    else:
+        if selected_style_key is None:
+            st.error("No art style selected")
+            st.stop()
 
-            st.subheader("Result")
-            st.image(result, width=450)
-            st.success(f"Done! Time: {total_time:.1f} sec")
+        engine = StyleTransfer(method="cyclegan", style_name=selected_style_key)
 
-        else:
-            if selected_style_key is None:
-                st.error("No art style selected")
-                st.stop()
+        with st.spinner("Processing..."):
+            content_img = load_uploaded_image(content_file)
+            result, total_time = engine.run(content_image=content_img)
 
-            engine = StyleTransfer(
-                method="cyclegan",
-                style_name=selected_style_key,
-            )
+        st.session_state.result_image = result
+        st.session_state.content_image = load_uploaded_image(content_file)
 
-            with st.spinner("Processing..."):
-                result, total_time = engine.run(content_image=content_path)
+if method == "cyclegan" and st.session_state.result_image is not None:
+    st.image(
+        st.session_state.result_image,
+        caption=st.session_state.cyclegan_style_label,
+        width="stretch",
+    )
 
-            st.subheader("Result")
-            st.image(result, caption=selected_label, width=450)
-            st.success("Done!")
+if method == "nst" and st.session_state.result_image is not None:
+    st.markdown("<a name='result'></a>", unsafe_allow_html=True)
 
-    finally:
-        try:
-            os.remove(content_path)
-            if style_path:
-                os.remove(style_path)
-        except Exception:
-            pass
+    st.subheader("Result")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.image(
+            st.session_state.content_image,
+            caption="Original",
+            width="stretch",
+        )
+
+    with col2:
+        st.image(
+            st.session_state.result_image,
+            caption="NST Stylization",
+            width="stretch",
+        )
+
+    buf = io.BytesIO()
+    st.session_state.result_image.save(buf, format="PNG")
+    buf.seek(0)
+
+    st.download_button(
+        "Download result",
+        data=buf,
+        file_name="stylized.png",
+        mime="image/png",
+    )
+
+    if st.session_state.scroll_to_result:
+        st.markdown(
+            "<script>document.location.hash = 'result';</script>",
+            unsafe_allow_html=True,
+        )
+        st.session_state.scroll_to_result = False

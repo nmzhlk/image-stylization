@@ -159,7 +159,6 @@ class CycleGANInference:
             )
 
         self.model = self._load_model_cached()
-        self._memory_cleared = False
 
     def _get_device(self, device):
         if device is None:
@@ -237,10 +236,9 @@ class CycleGANInference:
         except Exception:
             return image
 
-    def _cleanup_memory(self):
+    def cleanup(self):
         if self.device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
-            self._memory_cleared = True
 
     def transfer_style(self, image, output_path=None, max_size=1024, enhance=True):
         start_time = time.time()
@@ -296,12 +294,12 @@ class CycleGANInference:
             end_time = time.time()
             total_time = end_time - start_time
 
-            self._cleanup_memory()
+            self.cleanup()
             return result, total_time
 
         except Exception as e:
-            self._cleanup_memory()
+            self.cleanup()
             raise RuntimeError(f"Style transfer failed: {e}")
 
     def __del__(self):
-        self._cleanup_memory()
+        self.cleanup()

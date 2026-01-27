@@ -37,6 +37,18 @@ def make_progress_callback(num_steps, progress_bar, progress_text):
     return progress_callback
 
 
+def load_cyclegan_style_preview(style_key: str):
+    if style_key is None:
+        return None
+
+    preview_path = CYCLEGAN_MODELS_ROOT / style_key / "preview.jpg"
+
+    if preview_path.exists():
+        return Image.open(preview_path).convert("RGB")
+
+    return None
+
+
 CYCLEGAN_MODELS_ROOT = Path("app/models/checkpoints")
 
 STYLE_LABELS = {
@@ -208,27 +220,23 @@ def render_cyclegan_ui():
             )
             selected_style_key = style_display_map[selected_label]
             st.session_state.cyclegan_style_label = selected_label
+
+            preview_image = load_cyclegan_style_preview(selected_style_key)
+
+            if preview_image is not None:
+                st.image(
+                    preview_image,
+                    caption="Style Preview",
+                    width="stretch",
+                )
+            else:
+                st.info("Style preview not found")
         else:
             st.warning("No CycleGAN models found")
             selected_label = None
             selected_style_key = None
 
-        result_placeholder = st.empty()
-
-        if st.session_state.result_image:
-            result_placeholder.image(
-                st.session_state.result_image,
-                caption=st.session_state.cyclegan_style_label or "Stylized",
-                width="stretch",
-            )
-
-    return (
-        content_file,
-        selected_style_key,
-        selected_label,
-        result_placeholder,
-        original_img,
-    )
+    return content_file, selected_style_key, selected_label
 
 
 st.set_page_config(page_title="Image Stylization", layout="centered")
@@ -248,13 +256,7 @@ method = method_ui.lower()
 if method == "nst":
     content_file, style_file, params = render_nst_ui()
 else:
-    (
-        content_file,
-        selected_style_key,
-        selected_label,
-        result_placeholder,
-        original_img,
-    ) = render_cyclegan_ui()
+    content_file, selected_style_key, selected_label = render_cyclegan_ui()
 
 if method == "nst" and content_file and style_file:
     tmp_engine = StyleTransfer(method="nst", **params)
@@ -320,10 +322,6 @@ if run:
 
             st.session_state.result_image = result
             st.session_state.content_image = load_uploaded_image(content_file)
-
-            result_placeholder.image(
-                result, caption=st.session_state.cyclegan_style_label, width="stretch"
-            )
 
     except Exception as e:
         st.error("Model inference failed")

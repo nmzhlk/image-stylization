@@ -212,6 +212,11 @@ class NSTInference:
             print(f"Error estimating time: {e}")
             return self.num_steps * 2.0
 
+    def _cleanup_memory(self):
+        if self.device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            self._memory_cleared = True
+
     def transfer_style(
         self, content_image, style_image, output_path=None, progress_callback=None
     ):
@@ -258,13 +263,14 @@ class NSTInference:
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 result_pil.save(output_path)
 
-            if self.device == "cuda":
-                torch.cuda.empty_cache()
+            self._cleanup_memory()
 
             total_time = time.time() - start_time
             return result_pil, total_time
 
         except Exception as e:
-            if self.device == "cuda":
-                torch.cuda.empty_cache()
+            self._cleanup_memory()
             raise RuntimeError(f"Style transfer failed: {e}")
+
+    def __del__(self):
+        self._cleanup_memory()

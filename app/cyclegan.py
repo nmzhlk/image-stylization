@@ -1,3 +1,4 @@
+import time
 import torch
 import torch.nn as nn
 from PIL import Image, ImageEnhance
@@ -16,7 +17,7 @@ def get_norm_layer(norm_type="instance"):
         )
     if norm_type == "none":
         return lambda x: nn.Identity()
-    raise NotImplementedError
+    raise NotImplementedError(f"Normalization layer {norm_type} not implemented")
 
 
 class ResnetBlock(nn.Module):
@@ -40,7 +41,7 @@ class ResnetBlock(nn.Module):
         elif padding_type == "zero":
             p = 1
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Padding {padding_type} not implemented")
 
         conv_block += [
             nn.Conv2d(dim, dim, 3, padding=p, bias=use_bias),
@@ -142,39 +143,81 @@ class ResnetGenerator(nn.Module):
 
 
 class CycleGANInference:
-    def __init__(self, style_name="style_vangogh", device=None):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    _MODEL_CACHE = {}
+
+    def __init__(self, style_name, device=None):
+        self.device = self._get_device(device)
+        self.style_name = style_name
 
         base_dir = Path(__file__).parent / "models" / "checkpoints"
         self.model_path = base_dir / style_name / "latest_net_G.pth"
 
         if not self.model_path.exists():
-            raise FileNotFoundError
+            raise FileNotFoundError(
+                f"Model not found: {self.model_path}. "
+                f"Available styles: {self._get_available_styles()}"
+            )
 
-        self.model = self._load_model()
+        self.model = self._load_model_cached()
+        self._memory_cleared = False
+
+    def _get_device(self, device):
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if device == "cuda" and not torch.cuda.is_available():
+            print("Warning: CUDA requested but not available. Falling back to CPU.")
+            device = "cpu"
+
+        return device
+
+    def _get_available_styles(self):
+        base_dir = Path(__file__).parent / "models" / "checkpoints"
+        if not base_dir.exists():
+            return []
+
+        return [
+            d.name
+            for d in base_dir.iterdir()
+            if d.is_dir() and (d / "latest_net_G.pth").exists()
+        ]
+
+    def _load_model_cached(self):
+        cache_key = f"{self.style_name}_{self.device}"
+
+        if cache_key not in self._MODEL_CACHE:
+            model = self._load_model()
+            self._MODEL_CACHE[cache_key] = model
+
+        return self._MODEL_CACHE[cache_key]
 
     def _load_model(self):
-        model = ResnetGenerator(norm_layer=get_norm_layer("instance"))
-        state_dict = torch.load(self.model_path, map_location="cpu")
+        try:
+            model = ResnetGenerator(norm_layer=get_norm_layer("instance"))
+            state_dict = torch.load(self.model_path, map_location="cpu")
 
-        if next(iter(state_dict)).startswith("module."):
-            state_dict = {k[7:]: v for k, v in state_dict.items()}
+            if next(iter(state_dict)).startswith("module."):
+                state_dict = {k[7:]: v for k, v in state_dict.items()}
 
-        state_dict = {
-            k: v
-            for k, v in state_dict.items()
-            if not any(
-                x in k for x in ["running_mean", "running_var", "num_batches_tracked"]
-            )
-        }
+            state_dict = {
+                k: v
+                for k, v in state_dict.items()
+                if not any(
+                    x in k
+                    for x in ["running_mean", "running_var", "num_batches_tracked"]
+                )
+            }
 
-        model.load_state_dict(state_dict, strict=True)
-        model.eval()
+            model.load_state_dict(state_dict, strict=True)
+            model.eval()
 
-        if self.device == "cuda":
-            model.cuda()
+            if self.device == "cuda":
+                model.cuda()
 
-        return model
+            return model
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to load model {self.model_path}: {e}")
 
     def _optimal_size(self, size, max_size):
         w, h = size
@@ -186,73 +229,79 @@ class CycleGANInference:
         return int(max_size * ratio), max_size
 
     def _enhance(self, image):
-        image = ImageEnhance.Contrast(image).enhance(1.1)
-        image = ImageEnhance.Sharpness(image).enhance(1.05)
-        image = ImageEnhance.Color(image).enhance(1.08)
-        return image
+        try:
+            image = ImageEnhance.Contrast(image).enhance(1.1)
+            image = ImageEnhance.Sharpness(image).enhance(1.05)
+            image = ImageEnhance.Color(image).enhance(1.08)
+            return image
+        except Exception:
+            return image
+
+    def _cleanup_memory(self):
+        if self.device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            self._memory_cleared = True
 
     def transfer_style(self, image, output_path=None, max_size=1024, enhance=True):
-        if isinstance(image, (str, Path)):
-            image = Image.open(image).convert("RGB")
+        start_time = time.time()
 
-        original_size = image.size
-        target_size = self._optimal_size(original_size, max_size)
+        try:
+            if isinstance(image, (str, Path)):
+                image = Image.open(image).convert("RGB")
+            elif not isinstance(image, Image.Image):
+                raise TypeError(f"Expected PIL Image, str or Path, got {type(image)}")
 
-        transform = transforms.Compose(
-            [
-                transforms.Resize(target_size, transforms.InterpolationMode.BICUBIC),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-            ]
-        )
+            original_size = image.size
+            target_size = self._optimal_size(original_size, max_size)
 
-        tensor = transform(image).unsqueeze(0)
-        if self.device == "cuda":
-            tensor = tensor.cuda()
+            transform = transforms.Compose(
+                [
+                    transforms.Resize(
+                        target_size, transforms.InterpolationMode.BICUBIC
+                    ),
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                ]
+            )
 
-        with torch.no_grad():
-            output = self.model(tensor)
+            tensor = transform(image).unsqueeze(0)
+            if self.device == "cuda":
+                tensor = tensor.cuda()
 
-        output = output.squeeze().cpu().numpy()
-        if output.shape[0] == 1:
-            output = np.tile(output, (3, 1, 1))
+            with torch.no_grad():
+                output = self.model(tensor)
 
-        output = np.transpose(output, (1, 2, 0))
-        output = np.clip((output + 1) * 127.5, 0, 255).astype(np.uint8)
+            output = output.squeeze().cpu().numpy()
+            if output.shape[0] == 1:
+                output = np.tile(output, (3, 1, 1))
 
-        result = Image.fromarray(output)
+            output = np.transpose(output, (1, 2, 0))
+            output = np.clip((output + 1) * 127.5, 0, 255).astype(np.uint8)
+            result = Image.fromarray(output)
 
-        if enhance:
-            result = self._enhance(result)
+            if enhance:
+                result = self._enhance(result)
 
-        if target_size != original_size:
-            result = result.resize(original_size, Image.Resampling.LANCZOS)
+            if target_size != original_size:
+                result = result.resize(original_size, Image.Resampling.LANCZOS)
 
-        if output_path:
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            if output_path.suffix.lower() in [".jpg", ".jpeg"]:
-                result.save(output_path, quality=100, subsampling=0, optimize=True)
-            else:
-                result.save(output_path, quality=100)
+            if output_path:
+                output_path = Path(output_path)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                if output_path.suffix.lower() in [".jpg", ".jpeg"]:
+                    result.save(output_path, quality=95, subsampling=0, optimize=True)
+                else:
+                    result.save(output_path, quality=95)
 
-        return result
+            end_time = time.time()
+            total_time = end_time - start_time
 
+            self._cleanup_memory()
+            return result, total_time
 
-def test_cyclegan_inference():
-    input_image = Path("data/input/test.jpg")
-    output_dir = Path("data/output/test_styles")
-    output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self._cleanup_memory()
+            raise RuntimeError(f"Style transfer failed: {e}")
 
-    model_root = Path(__file__).parent / "models" / "checkpoints"
-    styles = [d.name for d in model_root.iterdir() if (d / "latest_net_G.pth").exists()]
-
-    for style in styles:
-        model = CycleGANInference(style)
-        out_path = output_dir / f"{style}.jpg"
-        result = model.transfer_style(input_image, out_path)
-        print(style, result.size)
-
-
-if __name__ == "__main__":
-    test_cyclegan_inference()
+    def __del__(self):
+        self._cleanup_memory()

@@ -18,6 +18,8 @@ class Normalization(nn.Module):
 
 
 class NSTInference:
+    _VGG_CACHE = {}
+
     def __init__(
         self,
         device=None,
@@ -26,20 +28,13 @@ class NSTInference:
         content_weight=1.0,
         style_weight=1e5,
     ):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = self._get_device(device)
         self.max_size = max_size
         self.num_steps = num_steps
         self.content_weight = content_weight
         self.style_weight = style_weight
 
-        self.cnn = (
-            models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1)
-            .features.to(self.device)
-            .eval()
-        )
-
-        for p in self.cnn.parameters():
-            p.requires_grad = False
+        self.cnn = self._load_vgg_model()
 
         self.content_layers = ["conv_4"]
         self.style_layers = ["conv_1", "conv_2", "conv_3", "conv_4", "conv_5"]
@@ -48,6 +43,33 @@ class NSTInference:
             [0.485, 0.456, 0.406], device=self.device
         )
         self.normalization_std = torch.tensor([0.229, 0.224, 0.225], device=self.device)
+
+        self._model_cache = None
+
+    def _get_device(self, device):
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        if device == "cuda" and not torch.cuda.is_available():
+            print("Warning: CUDA requested but not available. Falling back to CPU.")
+            device = "cpu"
+
+        return device
+
+    def _load_vgg_model(self):
+        cache_key = ("vgg19", str(self.device))
+
+        if cache_key not in self._VGG_CACHE:
+            vgg = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1)
+            features = vgg.features
+
+            features = features.to(self.device).eval()
+            for param in features.parameters():
+                param.requires_grad = False
+
+            self._VGG_CACHE[cache_key] = features
+
+        return self._VGG_CACHE[cache_key]
 
     @staticmethod
     def _gram_matrix(x):
@@ -68,6 +90,8 @@ class NSTInference:
     def _load_image(self, img):
         if isinstance(img, (str, Path)):
             img = Image.open(img).convert("RGB")
+        elif not isinstance(img, Image.Image):
+            raise TypeError(f"Expected PIL Image, str or Path, got {type(img)}")
 
         original_size = img.size
         target_size = self._optimal_size(original_size)
@@ -83,6 +107,9 @@ class NSTInference:
         return tensor, original_size
 
     def _build_model(self):
+        if self._model_cache is not None:
+            return self._model_cache
+
         normalization = Normalization(self.normalization_mean, self.normalization_std)
 
         layers = []
@@ -110,7 +137,9 @@ class NSTInference:
                 style_layers[name] = len(layers) - 1
 
         model = nn.Sequential(normalization, *layers)
-        return model, content_layers, style_layers
+
+        self._model_cache = (model, content_layers, style_layers)
+        return self._model_cache
 
     def _make_closure(
         self,
@@ -151,135 +180,91 @@ class NSTInference:
         return closure, optimizer
 
     def estimate_time(self, content_image, style_image):
-        content, _ = self._load_image(content_image)
-        style, _ = self._load_image(style_image)
+        try:
+            content, _ = self._load_image(content_image)
+            style, _ = self._load_image(style_image)
 
-        model, content_ids, style_ids = self._build_model()
-        model.to(self.device).eval()
+            model, content_ids, style_ids = self._build_model()
 
-        target = content.clone().requires_grad_(True)
+            target = content.clone().requires_grad_(True)
 
-        content_features = {
-            name: model[: idx + 1](content).detach()
-            for name, idx in content_ids.items()
-        }
-        style_features = {
-            name: self._gram_matrix(model[: idx + 1](style).detach())
-            for name, idx in style_ids.items()
-        }
+            content_features = {
+                name: model[: idx + 1](content).detach()
+                for name, idx in content_ids.items()
+            }
+            style_features = {
+                name: self._gram_matrix(model[: idx + 1](style).detach())
+                for name, idx in style_ids.items()
+            }
 
-        test_optimizer = optim.LBFGS([target], max_iter=1)
-
-        def test_closure():
-            test_optimizer.zero_grad()
-            content_loss = 0.0
-            style_loss = 0.0
-
-            for name, idx in content_ids.items():
-                target_feat = model[: idx + 1](target)
-                content_loss += nn.functional.mse_loss(
-                    target_feat, content_features[name]
-                )
-
-            for name, idx in style_ids.items():
-                target_feat = model[: idx + 1](target)
-                gram_t = self._gram_matrix(target_feat)
-                style_loss += nn.functional.mse_loss(gram_t, style_features[name])
-
-            style_loss = style_loss / len(style_ids)
-            total_loss = (
-                self.content_weight * content_loss + self.style_weight * style_loss
+            test_closure, test_optimizer = self._make_closure(
+                target, model, content_features, style_features, content_ids, style_ids
             )
-            total_loss.backward()
-            return total_loss
 
-        start_time = time.time()
-        test_optimizer.step(test_closure)
-        end_time = time.time()
+            start_time = time.time()
+            test_optimizer.step(test_closure)
+            time_per_step = time.time() - start_time
 
-        time_per_step = end_time - start_time
-        estimated_total = time_per_step * self.num_steps
+            estimated_total = time_per_step * self.num_steps
+            return estimated_total
 
-        return estimated_total
+        except Exception as e:
+            print(f"Error estimating time: {e}")
+            return self.num_steps * 2.0
 
     def transfer_style(
         self, content_image, style_image, output_path=None, progress_callback=None
     ):
-        content, original_size = self._load_image(content_image)
-        style, _ = self._load_image(style_image)
+        try:
+            content, original_size = self._load_image(content_image)
+            style, _ = self._load_image(style_image)
 
-        model, content_ids, style_ids = self._build_model()
-        model.to(self.device).eval()
+            model, content_ids, style_ids = self._build_model()
 
-        content_features = {
-            name: model[: idx + 1](content).detach()
-            for name, idx in content_ids.items()
-        }
-        style_features = {
-            name: self._gram_matrix(model[: idx + 1](style).detach())
-            for name, idx in style_ids.items()
-        }
+            content_features = {
+                name: model[: idx + 1](content).detach()
+                for name, idx in content_ids.items()
+            }
+            style_features = {
+                name: self._gram_matrix(model[: idx + 1](style).detach())
+                for name, idx in style_ids.items()
+            }
 
-        target = content.clone().requires_grad_(True)
-        start_time = time.time()
+            target = content.clone().requires_grad_(True)
 
-        closure, optimizer = self._make_closure(
-            target, model, content_features, style_features, content_ids, style_ids
-        )
+            closure, optimizer = self._make_closure(
+                target, model, content_features, style_features, content_ids, style_ids
+            )
 
-        for step in range(1, self.num_steps + 1):
-            optimizer.step(closure)
+            start_time = time.time()
+            for step in range(1, self.num_steps + 1):
+                optimizer.step(closure)
 
-            if progress_callback:
-                elapsed = time.time() - start_time
-                avg_per_step = elapsed / step
-                remaining = max(round(avg_per_step * (self.num_steps - step)), 0)
-                progress_callback(step, remaining)
+                if progress_callback:
+                    elapsed = time.time() - start_time
+                    avg_per_step = elapsed / step
+                    remaining = max(round(avg_per_step * (self.num_steps - step)), 0)
+                    progress_callback(step, remaining)
 
-        with torch.no_grad():
-            result = target.detach().squeeze(0).clamp(0, 1).cpu()
+            with torch.no_grad():
+                result = target.detach().squeeze(0).clamp(0, 1).cpu()
 
-        result_pil = transforms.ToPILImage()(result)
-        if result_pil.size != original_size:
-            result_pil = result_pil.resize(original_size, Image.Resampling.LANCZOS)
+            result_pil = transforms.ToPILImage()(result)
+            if result_pil.size != original_size:
+                result_pil = result_pil.resize(original_size, Image.Resampling.LANCZOS)
 
-        if output_path:
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            result_pil.save(output_path)
+            if output_path:
+                output_path = Path(output_path)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                result_pil.save(output_path)
 
-        total_time = time.time() - start_time
-        return result_pil, total_time
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
 
+            total_time = time.time() - start_time
+            return result_pil, total_time
 
-def test_nst_inference():
-    content_image = Path("data/input/test.jpg")
-    style_image = Path("data/input/style.jpg")
-
-    output_dir = Path("data/output/nst")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    output_path = output_dir / "nst_result.jpg"
-
-    model = NSTInference(
-        max_size=512,
-        num_steps=50,
-        content_weight=1.0,
-        style_weight=1e5,
-    )
-
-    def progress_callback(step, remaining_sec):
-        print(f"Step {step}/{model.num_steps}, remaining: {remaining_sec:.1f} sec")
-
-    result, total_time = model.transfer_style(
-        content_image=content_image,
-        style_image=style_image,
-        output_path=output_path,
-        progress_callback=progress_callback,
-    )
-
-    print(f"Result size: {result.size}, total time: {total_time:.1f} sec")
-
-
-if __name__ == "__main__":
-    test_nst_inference()
+        except Exception as e:
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+            raise RuntimeError(f"Style transfer failed: {e}")

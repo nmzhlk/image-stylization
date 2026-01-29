@@ -1,11 +1,15 @@
+import functools
 import time
+from pathlib import Path
+
+from PIL import Image, ImageEnhance
+
+import numpy as np
+
 import torch
 import torch.nn as nn
-from PIL import Image, ImageEnhance
+
 import torchvision.transforms as transforms
-import numpy as np
-from pathlib import Path
-import functools
 
 
 def get_norm_layer(norm_type="instance"):

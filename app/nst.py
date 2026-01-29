@@ -1,10 +1,13 @@
 import time
+from pathlib import Path
+
+from PIL import Image
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
 from torchvision import models, transforms
-from PIL import Image
-from pathlib import Path
 
 
 class Normalization(nn.Module):

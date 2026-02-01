@@ -4,8 +4,12 @@ import streamlit as st
 import torch
 from PIL import Image
 
-from app.cyclegan import CycleGANInference
-from app.nst import NSTInference
+try:
+    from cyclegan import CycleGANInference
+    from nst import NSTInference
+except ImportError:
+    from .cyclegan import CycleGANInference
+    from .nst import NSTInference
 
 
 @st.cache_resource

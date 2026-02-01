@@ -1,10 +1,10 @@
 import streamlit as st
 from PIL import Image
 
-from app.app_ui.constants import NST_PRESETS, STYLE_LABELS
-from app.app_ui.session_utils import reset_result
-from app.app_utils.image_utils import load_uploaded_image
-from app.app_utils.style_utils import get_available_styles, load_cyclegan_style_preview
+from app_ui.constants import NST_PRESETS, STYLE_LABELS
+from app_ui.session_utils import reset_result
+from app_utils.image_utils import load_uploaded_image
+from app_utils.style_utils import get_available_styles, load_cyclegan_style_preview
 
 
 def render_nst_ui():

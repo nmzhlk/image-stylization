@@ -1,6 +1,6 @@
 from PIL import Image
 
-from app.app_ui.constants import CYCLEGAN_MODELS_ROOT
+from app_ui.constants import CYCLEGAN_MODELS_ROOT
 
 
 def get_available_styles():

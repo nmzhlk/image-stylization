@@ -1,0 +1,21 @@
+# pyproject.toml
+[tool.black]
+line-length = 88
+target-version = ['py312']
+extend-exclude = '''
+/(
+  \.git
+  | __pycache__
+  | \.pytest_cache
+  | \.venv
+  | venv
+  | app/models
+  | app/util
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["app"]
+skip = ["app/models", "app/util"]

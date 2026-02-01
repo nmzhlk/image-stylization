@@ -2,9 +2,9 @@ import os
 
 from PIL import Image
 
-from cyclegan import CycleGANInference
+from app.cyclegan import CycleGANInference
 
-from nst import NSTInference
+from app.nst import NSTInference
 
 import streamlit as st
 
@@ -30,11 +30,11 @@ def _load_cyclegan(style_name):
 
 @st.cache_resource
 def _load_nst(max_size, num_steps, content_weight, style_weight):
-    if not (256 <= max_size <= 2048):
-        raise ValueError(f"max_size must be between 256 and 2048, got {max_size}")
+    if not (128 <= max_size <= 2048):
+        raise ValueError(f"max_size must be between 128 and 2048, got {max_size}")
 
-    if not (10 <= num_steps <= 2000):
-        raise ValueError(f"num_steps must be between 10 and 2000, got {num_steps}")
+    if not (1 <= num_steps <= 2000):
+        raise ValueError(f"num_steps must be between 1 and 2000, got {num_steps}")
 
     if content_weight <= 0:
         raise ValueError(f"content_weight must be positive, got {content_weight}")
@@ -58,6 +58,7 @@ class StyleTransfer:
     MAX_IMAGE_DIMENSION = 8912
 
     def __init__(self, method: str, **kwargs):
+        self.device = None
         self.method = method.lower()
 
         if self.method not in ["cyclegan", "nst"]:

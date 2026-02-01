@@ -1,12 +1,10 @@
 import time
 from pathlib import Path
 
-from PIL import Image
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
+from PIL import Image
 from torchvision import models, transforms
 
 

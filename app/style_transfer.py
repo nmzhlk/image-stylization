@@ -1,14 +1,11 @@
 import os
 
+import streamlit as st
+import torch
 from PIL import Image
 
 from app.cyclegan import CycleGANInference
-
 from app.nst import NSTInference
-
-import streamlit as st
-
-import torch
 
 
 @st.cache_resource
@@ -102,8 +99,8 @@ class StyleTransfer:
             file_size = os.path.getsize(image)
             if file_size > self.MAX_FILE_SIZE:
                 raise ValueError(
-                    f"File {image} is too large ({file_size/1024/1024:.1f}MB). "
-                    f"Maximum size is {self.MAX_FILE_SIZE/1024/1024}MB"
+                    f"File {image} is too large ({file_size / 1024 / 1024:.1f}MB). "
+                    f"Maximum size is {self.MAX_FILE_SIZE / 1024 / 1024}MB"
                 )
 
             try:

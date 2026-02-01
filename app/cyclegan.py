@@ -2,14 +2,11 @@ import functools
 import time
 from pathlib import Path
 
-from PIL import Image, ImageEnhance
-
 import numpy as np
-
 import torch
 import torch.nn as nn
-
 import torchvision.transforms as transforms
+from PIL import Image, ImageEnhance
 
 
 def get_norm_layer(norm_type="instance"):

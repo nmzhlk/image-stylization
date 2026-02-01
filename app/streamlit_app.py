@@ -1,15 +1,12 @@
+import streamlit as st
 from app_ui.components import render_cyclegan_ui, render_nst_ui, render_result_ui
 from app_ui.session_utils import init_session_state, reset_result
-
 from app_utils.image_utils import (
     create_download_buffer,
     get_download_filename,
     load_uploaded_image,
     make_progress_callback,
 )
-
-import streamlit as st
-
 from style_transfer import StyleTransfer
 
 init_session_state()

@@ -7,7 +7,28 @@ from app_utils.image_utils import (
     load_uploaded_image,
     make_progress_callback,
 )
-from style_transfer import StyleTransfer
+
+
+@st.cache_resource(max_entries=2)
+def get_nst_model(max_size, num_steps, content_weight, style_weight):
+    with st.spinner(f"Loading NST model (size: {max_size}px, steps: {num_steps})..."):
+        from nst import NSTInference
+
+        return NSTInference(
+            max_size=max_size,
+            num_steps=num_steps,
+            content_weight=content_weight,
+            style_weight=style_weight,
+            device="cpu",
+        )
+
+
+@st.cache_resource(max_entries=4)
+def get_cyclegan_model(style_name):
+    from cyclegan import CycleGANInference
+
+    return CycleGANInference(style_name=style_name, device="cpu")
+
 
 init_session_state()
 
@@ -32,12 +53,15 @@ else:
     content_file, selected_style_key, selected_label = render_cyclegan_ui()
 
 if method == "nst" and content_file and style_file:
-    tmp_engine = StyleTransfer(method="nst", **params)
-    est = tmp_engine.model.estimate_time(
-        load_uploaded_image(content_file),
-        load_uploaded_image(style_file),
-    )
-    st.info(f"Estimated time: ~{int(est)} sec")
+    try:
+        model = get_nst_model(**params)
+        est = model.estimate_time(
+            load_uploaded_image(content_file),
+            load_uploaded_image(style_file),
+        )
+        st.info(f"Estimated time: ~{int(est)} sec")
+    except Exception as e:
+        st.warning(f"Could not estimate time: {e}")
 
 run = st.button(
     "Stylize!",
@@ -65,26 +89,19 @@ if run:
                 st.stop()
 
             style_img = load_uploaded_image(style_file)
-            engine = StyleTransfer(method="nst", **params)
+            model = get_nst_model(**params)
 
             with st.spinner("Processing..."):
                 progress_bar = st.progress(0)
                 progress_text = st.empty()
 
-                result_dict = engine.run(
+                result, total_time = model.transfer_style(
                     content_image=content_path,
                     style_image=style_img,
                     progress_callback=make_progress_callback(
                         params["num_steps"], progress_bar, progress_text
                     ),
                 )
-
-            if not result_dict["success"]:
-                st.error(f"Error: {result_dict.get('error', 'Unknown error')}")
-                st.stop()
-
-            result = result_dict["image"]
-            total_time = result_dict["time"]
 
             st.session_state.nst_params = params
             st.session_state.result_image = result
@@ -96,7 +113,7 @@ if run:
                 st.error("No art style selected")
                 st.stop()
 
-            engine = StyleTransfer(method="cyclegan", style_name=selected_style_key)
+            model = get_cyclegan_model(selected_style_key)
 
             with st.spinner("Processing..."):
                 content_img = load_uploaded_image(content_file)
@@ -104,36 +121,37 @@ if run:
                     content_file.name if hasattr(content_file, "name") else None
                 )
 
-                result_dict = engine.run(content_image=content_img)
+                result, total_time = model.transfer_style(image=content_img)
 
-            if not result_dict["success"]:
-                st.error(f"Error: {result_dict.get('error', 'Unknown error')}")
-                st.stop()
-
-            result = result_dict["image"]
-            total_time = result_dict["time"]
-
-            st.session_state.result_image = result
+            st.session_state.result_image = result  # ⚠️ PIL Image
+            st.session_state.cyclegan_style_label = selected_label
             st.success(f"Stylization completed in {total_time:.1f} seconds!")
-            st.session_state.content_image = load_uploaded_image(content_file)
+            st.session_state.content_image = content_img
 
     except Exception as e:
         st.error("Model inference failed")
         st.exception(e)
         st.stop()
 
-if render_result_ui(method):
-    filename = get_download_filename(
-        method=method,
-        style_label=st.session_state.get("cyclegan_style_label"),
-        style_key=st.session_state.get("selected_style_key"),
-        original_filename=st.session_state.get("original_filename"),
-    )
+if "result_image" in st.session_state and st.session_state.result_image is not None:
+    from PIL import Image
 
-    download_buf = create_download_buffer(st.session_state.result_image)
-    st.download_button(
-        "Download Stylized Image",
-        data=download_buf,
-        file_name=filename,
-        mime="image/png",
-    )
+    if isinstance(st.session_state.result_image, Image.Image):
+        render_result_ui(method)
+
+        filename = get_download_filename(
+            method=method,
+            style_label=st.session_state.get("cyclegan_style_label"),
+            style_key=st.session_state.get("selected_style_key"),
+            original_filename=st.session_state.get("original_filename"),
+        )
+
+        download_buf = create_download_buffer(st.session_state.result_image)
+        st.download_button(
+            "Download Stylized Image",
+            data=download_buf,
+            file_name=filename,
+            mime="image/png",
+        )
+    else:
+        st.error("Result is not a valid image")

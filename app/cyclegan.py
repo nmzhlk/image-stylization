@@ -1,4 +1,5 @@
 import functools
+import threading
 import time
 from pathlib import Path
 
@@ -145,6 +146,7 @@ class ResnetGenerator(nn.Module):
 
 class CycleGANInference:
     _MODEL_CACHE = {}
+    _cache_lock = threading.Lock()
 
     def __init__(self, style_name, device=None):
         self.device = self._get_device(device)
@@ -183,13 +185,14 @@ class CycleGANInference:
         ]
 
     def _load_model_cached(self):
-        cache_key = f"{self.style_name}_{self.device}"
+        with self._cache_lock:
+            cache_key = f"{self.style_name}_{self.device}"
 
-        if cache_key not in self._MODEL_CACHE:
-            model = self._load_model()
-            self._MODEL_CACHE[cache_key] = model
+            if cache_key not in self._MODEL_CACHE:
+                model = self._load_model()
+                self._MODEL_CACHE[cache_key] = model
 
-        return self._MODEL_CACHE[cache_key]
+            return self._MODEL_CACHE[cache_key]
 
     def _load_model(self):
         try:

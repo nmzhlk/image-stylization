@@ -1,3 +1,4 @@
+import threading
 import time
 from pathlib import Path
 
@@ -20,6 +21,7 @@ class Normalization(nn.Module):
 
 class NSTInference:
     _VGG_CACHE = {}
+    _cache_lock = threading.Lock()
 
     def __init__(
         self,
@@ -58,19 +60,20 @@ class NSTInference:
         return device
 
     def _load_vgg_model(self):
-        cache_key = ("vgg19", str(self.device))
+        with self._cache_lock:
+            cache_key = ("vgg19", str(self.device))
 
-        if cache_key not in self._VGG_CACHE:
-            vgg = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1)
-            features = vgg.features
+            if cache_key not in self._VGG_CACHE:
+                vgg = models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1)
+                features = vgg.features
 
-            features = features.to(self.device).eval()
-            for param in features.parameters():
-                param.requires_grad = False
+                features = features.to(self.device).eval()
+                for param in features.parameters():
+                    param.requires_grad = False
 
-            self._VGG_CACHE[cache_key] = features
+                self._VGG_CACHE[cache_key] = features
 
-        return self._VGG_CACHE[cache_key]
+            return self._VGG_CACHE[cache_key]
 
     @staticmethod
     def _gram_matrix(x):

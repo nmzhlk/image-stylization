@@ -11,16 +11,15 @@ from app_utils.image_utils import (
 
 @st.cache_resource(max_entries=2)
 def get_nst_model(max_size, num_steps, content_weight, style_weight):
-    with st.spinner(f"Loading NST model (size: {max_size}px, steps: {num_steps})..."):
-        from nst import NSTInference
+    from nst import NSTInference
 
-        return NSTInference(
-            max_size=max_size,
-            num_steps=num_steps,
-            content_weight=content_weight,
-            style_weight=style_weight,
-            device="cpu",
-        )
+    return NSTInference(
+        max_size=max_size,
+        num_steps=num_steps,
+        content_weight=content_weight,
+        style_weight=style_weight,
+        device="cpu",
+    )
 
 
 @st.cache_resource(max_entries=4)
@@ -59,7 +58,11 @@ if method == "nst" and content_file and style_file:
             load_uploaded_image(content_file),
             load_uploaded_image(style_file),
         )
-        st.info(f"Estimated time: ~{int(est)} sec")
+        if est > 120:
+            minutes = est / 60
+            st.info(f"Estimated time: ~{minutes:.1f} minutes ({int(est)} seconds)")
+        else:
+            st.info(f"Estimated time: ~{int(est)} seconds")
     except Exception as e:
         st.warning(f"Could not estimate time: {e}")
 
@@ -70,6 +73,7 @@ run = st.button(
         or (method == "nst" and style_file is None)
         or (method == "cyclegan" and selected_style_key is None)
     ),
+    use_container_width=True,
 )
 
 if run:
@@ -152,6 +156,7 @@ if "result_image" in st.session_state and st.session_state.result_image is not N
             data=download_buf,
             file_name=filename,
             mime="image/png",
+            use_container_width=True,
         )
     else:
         st.error("Result is not a valid image")

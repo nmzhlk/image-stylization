@@ -1,3 +1,4 @@
+import gc
 import threading
 import time
 from pathlib import Path
@@ -155,30 +156,38 @@ class NSTInference:
         style_ids,
     ):
         optimizer = optim.LBFGS([target], max_iter=1)
+        content_map = {idx: name for name, idx in content_ids.items()}
+        style_map = {idx: name for name, idx in style_ids.items()}
+        max_idx = max(max(content_ids.values()), max(style_ids.values()))
 
         def closure():
-            optimizer.zero_grad()
+            if torch.is_grad_enabled():
+                optimizer.zero_grad()
+
             content_loss = 0.0
             style_loss = 0.0
+            x = target
 
-            for name, idx in content_ids.items():
-                target_feat = model[: idx + 1](target)
-                content_loss += nn.functional.mse_loss(
-                    target_feat, content_features[name]
-                )
-
-            for name, idx in style_ids.items():
-                target_feat = model[: idx + 1](target)
-                gram_t = self._gram_matrix(target_feat)
-                style_loss += nn.functional.mse_loss(gram_t, style_features[name])
-
-            style_loss = style_loss / len(style_ids)
+            for i, layer in enumerate(model):
+                x = layer(x)
+                if i in content_map:
+                    content_loss += nn.functional.mse_loss(
+                        x, content_features[content_map[i]]
+                    )
+                if i in style_map:
+                    gram_t = self._gram_matrix(x)
+                    style_loss += nn.functional.mse_loss(
+                        gram_t, style_features[style_map[i]]
+                    )
+                if i == max_idx:
+                    break
 
             total_loss = (
-                self.content_weight * content_loss + self.style_weight * style_loss
+                self.content_weight * content_loss
+                + (self.style_weight / len(style_ids)) * style_loss
             )
-            total_loss.backward()
-
+            if total_loss.requires_grad:
+                total_loss.backward()
             return total_loss
 
         return closure, optimizer
@@ -192,14 +201,15 @@ class NSTInference:
 
             target = content.clone().requires_grad_(True)
 
-            content_features = {
-                name: model[: idx + 1](content).detach()
-                for name, idx in content_ids.items()
-            }
-            style_features = {
-                name: self._gram_matrix(model[: idx + 1](style).detach())
-                for name, idx in style_ids.items()
-            }
+            with torch.no_grad():
+                content_features = {
+                    name: model[: idx + 1](content).detach()
+                    for name, idx in content_ids.items()
+                }
+                style_features = {
+                    name: self._gram_matrix(model[: idx + 1](style).detach())
+                    for name, idx in style_ids.items()
+                }
 
             test_closure, test_optimizer = self._make_closure(
                 target, model, content_features, style_features, content_ids, style_ids
@@ -208,6 +218,9 @@ class NSTInference:
             start_time = time.time()
             test_optimizer.step(test_closure)
             time_per_step = time.time() - start_time
+
+            del target, c_feat, s_feat, test_opt
+            gc.collect()
 
             estimated_total = time_per_step * self.num_steps
             return estimated_total
@@ -224,19 +237,23 @@ class NSTInference:
         self, content_image, style_image, output_path=None, progress_callback=None
     ):
         try:
+            gc.collect()
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
             content, original_size = self._load_image(content_image)
             style, _ = self._load_image(style_image)
 
             model, content_ids, style_ids = self._build_model()
 
-            content_features = {
-                name: model[: idx + 1](content).detach()
-                for name, idx in content_ids.items()
-            }
-            style_features = {
-                name: self._gram_matrix(model[: idx + 1](style).detach())
-                for name, idx in style_ids.items()
-            }
+            with torch.no_grad():
+                content_features = {
+                    name: model[: idx + 1](content).detach()
+                    for name, idx in content_ids.items()
+                }
+                style_features = {
+                    name: self._gram_matrix(model[: idx + 1](style).detach()).detach()
+                    for name, idx in style_ids.items()
+                }
 
             target = content.clone().requires_grad_(True)
 
@@ -248,11 +265,20 @@ class NSTInference:
             for step in range(1, self.num_steps + 1):
                 optimizer.step(closure)
 
+                if step % 50 == 0:
+                    gc.collect()
+
                 if progress_callback:
                     elapsed = time.time() - start_time
                     avg_per_step = elapsed / step
                     remaining = max(round(avg_per_step * (self.num_steps - step)), 0)
                     progress_callback(step, remaining)
+
+            del content_features
+            del style_features
+            del optimizer
+            del closure
+            gc.collect()
 
             with torch.no_grad():
                 result = target.detach().squeeze(0).clamp(0, 1).cpu()

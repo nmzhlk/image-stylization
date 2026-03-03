@@ -1,3 +1,5 @@
+import gc
+
 import streamlit as st
 from app_ui.components import render_cyclegan_ui, render_nst_ui, render_result_ui
 from app_ui.session_utils import init_session_state, reset_result
@@ -9,20 +11,14 @@ from app_utils.image_utils import (
 )
 
 
-@st.cache_resource(max_entries=2)
-def get_nst_model(max_size, num_steps, content_weight, style_weight):
+@st.cache_resource(max_entries=1)
+def get_nst_model():
     from nst import NSTInference
 
-    return NSTInference(
-        max_size=max_size,
-        num_steps=num_steps,
-        content_weight=content_weight,
-        style_weight=style_weight,
-        device="cpu",
-    )
+    return NSTInference(device="cpu")
 
 
-@st.cache_resource(max_entries=4)
+@st.cache_resource(max_entries=2)
 def get_cyclegan_model(style_name):
     from cyclegan import CycleGANInference
 
@@ -53,7 +49,12 @@ else:
 
 if method == "nst" and content_file and style_file:
     try:
-        model = get_nst_model(**params)
+        model = get_nst_model()
+        model.num_steps = params["num_steps"]
+        model.max_size = params["max_size"]
+        model.content_weight = params["content_weight"]
+        model.style_weight = params["style_weight"]
+
         est = model.estimate_time(
             load_uploaded_image(content_file),
             load_uploaded_image(style_file),
@@ -78,6 +79,8 @@ run = st.button(
 
 if run:
     try:
+        gc.collect()
+
         if content_file is None:
             st.error("Content image is required")
             st.stop()
@@ -93,7 +96,12 @@ if run:
                 st.stop()
 
             style_img = load_uploaded_image(style_file)
-            model = get_nst_model(**params)
+
+            model = get_nst_model()
+            model.num_steps = params["num_steps"]
+            model.max_size = params["max_size"]
+            model.content_weight = params["content_weight"]
+            model.style_weight = params["style_weight"]
 
             with st.spinner("Processing..."):
                 progress_bar = st.progress(0)
@@ -127,7 +135,7 @@ if run:
 
                 result, total_time = model.transfer_style(image=content_img)
 
-            st.session_state.result_image = result  # ⚠️ PIL Image
+            st.session_state.result_image = result
             st.session_state.cyclegan_style_label = selected_label
             st.success(f"Stylization completed in {total_time:.1f} seconds!")
             st.session_state.content_image = content_img
@@ -136,6 +144,8 @@ if run:
         st.error("Model inference failed")
         st.exception(e)
         st.stop()
+    finally:
+        gc.collect()
 
 if "result_image" in st.session_state and st.session_state.result_image is not None:
     from PIL import Image

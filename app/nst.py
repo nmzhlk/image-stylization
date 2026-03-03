@@ -219,7 +219,7 @@ class NSTInference:
             test_optimizer.step(test_closure)
             time_per_step = time.time() - start_time
 
-            del target, c_feat, s_feat, test_opt
+            del target, content_features, style_features, test_optimizer, test_closure
             gc.collect()
 
             estimated_total = time_per_step * self.num_steps

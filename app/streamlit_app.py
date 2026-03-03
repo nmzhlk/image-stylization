@@ -1,4 +1,29 @@
 import gc
+import subprocess
+import sys
+import os
+
+
+def install_torch():
+    if os.environ.get("STREAMLIT_RUNTIME_ENV") == "cloud" or "HOSTNAME" in os.environ:
+        try:
+            import torch
+        except ImportError:
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "torch==2.2.1+cpu",
+                    "torchvision==0.17.1+cpu",
+                    "-f",
+                    "https://download.pytorch.org/whl/torch_stable.html",
+                ]
+            )
+
+
+install_torch()
 
 import streamlit as st
 from app_ui.components import render_cyclegan_ui, render_nst_ui, render_result_ui

@@ -155,7 +155,7 @@ class NSTInference:
         content_ids,
         style_ids,
     ):
-        optimizer = optim.LBFGS([target], max_iter=1)
+        optimizer = optim.LBFGS([target], max_iter=1, history_size=10)
         content_map = {idx: name for name, idx in content_ids.items()}
         style_map = {idx: name for name, idx in style_ids.items()}
         max_idx = max(max(content_ids.values()), max(style_ids.values()))
@@ -232,6 +232,7 @@ class NSTInference:
     def cleanup(self):
         if self.device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
+        gc.collect()
 
     def transfer_style(
         self, content_image, style_image, output_path=None, progress_callback=None
@@ -300,6 +301,9 @@ class NSTInference:
         except Exception as e:
             self.cleanup()
             raise RuntimeError(f"Style transfer failed: {e}")
+
+        finally:
+            self.cleanup()
 
     def __del__(self):
         self.cleanup()

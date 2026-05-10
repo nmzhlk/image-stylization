@@ -11,6 +11,23 @@ Transfer styles between images using neural networks!
 
 Try the app now → https://nmzhlk-image-stylization.streamlit.app/
 
+## Examples
+
+### Neural Style Transfer
+Transform any image by applying another image's artistic style:
+
+| Content Image | Style Image | Stylized Result |
+|---------------|-------------|-----------------|
+| ![Content](examples/nst_1_content.png) | ![Style](examples/nst_2_style.png) | ![Result](examples/nst_3_stylized.png) |
+
+### CycleGAN
+Transform photos into famous art styles (Van Gogh, Monet, Cezanne, Ukiyo-e):
+
+| Original Image | Ukiyo-e Stylized |
+|----------------|------------------|
+| ![Original](examples/cyclegan_1_content.png) | ![Ukiyo-e](examples/cyclegan_2_ukiyoe_stylized.png) |
+
+
 ## Features
 - **Neural Style Transfer (NST)** – transfer styles from any image
 - **NST Modes**: Fast Preview, Balanced, Artistic, High Quality
